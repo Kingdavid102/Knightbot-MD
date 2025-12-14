@@ -1,271 +1,329 @@
-/**
- * Express Server for Multi-Session WhatsApp Bot
- * Handles pairing requests from web interface
- */
-
 const express = require('express');
-const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
-const path = require('path');
 const fs = require('fs');
-const chalk = require('chalk');
-
-const { 
-    startBotSession, 
-    getSession, 
-    getAllSessions,
-    deleteSession,
-    isSessionActive,
-    getSessionInfo 
-} = require('./multi_session_pair');
+const path = require('path');
+const startpairing = require('./pair');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Session limit configuration
+const MAX_SESSIONS = 50;
+
 // Middleware
-app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public')); // Serve static files (HTML, CSS, JS)
+app.use(express.static('public'));
 
-// Store pairing callbacks
-global.pairingCallbacks = {};
+// Store for managing active sessions
+const activeSessions = new Map();
 
-// Store pending sessions
-const pendingSessions = new Map();
+// Helper function to validate phone number format
+function validatePhoneNumber(phoneNumber) {
+    const cleaned = phoneNumber.replace(/\D/g, '');
+    
+    if (cleaned.startsWith('0')) {
+        return { valid: false, error: 'Phone numbers starting with 0 are not allowed' };
+    }
+    
+    if (!/^\d+$/.test(cleaned)) {
+        return { valid: false, error: 'Phone numbers can only contain digits' };
+    }
+    
+    if (cleaned.length < 10) {
+        return { valid: false, error: 'Phone number must be at least 10 digits' };
+    }
+    
+    if (cleaned.length > 15) {
+        return { valid: false, error: 'Phone number cannot exceed 15 digits' };
+    }
+    
+    return { valid: true, number: cleaned };
+}
 
-/**
- * Homepage - Pairing Interface
- */
+// Helper function to check session limit
+function isSessionLimitReached() {
+    return activeSessions.size >= MAX_SESSIONS;
+}
+
+// Helper function to count session folders
+function countSessionFolders() {
+    const pairingDir = './kingbadboitimewisher/pairing';
+    
+    if (!fs.existsSync(pairingDir)) {
+        return 0;
+    }
+    
+    try {
+        const sessionFolders = fs.readdirSync(pairingDir);
+        return sessionFolders.filter(folder => {
+            const sessionPath = path.join(pairingDir, folder);
+            const stats = fs.statSync(sessionPath);
+            return stats.isDirectory();
+        }).length;
+    } catch (error) {
+        console.error('Error counting session folders:', error);
+        return 0;
+    }
+}
+
+// Load existing sessions on startup
+function loadExistingSessions() {
+    const pairingDir = './kingbadboitimewisher/pairing';
+    
+    if (!fs.existsSync(pairingDir)) {
+        fs.mkdirSync(pairingDir, { recursive: true });
+        return;
+    }
+    
+    try {
+        const sessionFolders = fs.readdirSync(pairingDir);
+        let loadedCount = 0;
+        
+        sessionFolders.forEach(folder => {
+            if (loadedCount >= MAX_SESSIONS) {
+                return;
+            }
+            
+            const sessionPath = path.join(pairingDir, folder);
+            const stats = fs.statSync(sessionPath);
+            
+            if (stats.isDirectory() && /^\d+$/.test(folder)) {
+                const phoneNumber = folder;
+                
+                const validation = validatePhoneNumber(phoneNumber);
+                if (validation.valid) {
+                    console.log(`Loading existing session: ${phoneNumber}`);
+                    activeSessions.set(phoneNumber, {
+                        status: 'loaded',
+                        sessionPath: sessionPath,
+                        loadedAt: new Date(),
+                        sessionId: folder
+                    });
+                    
+                    try {
+                        startpairing(phoneNumber);
+                    } catch (error) {
+                        console.error(`Error starting session for ${phoneNumber}:`, error);
+                    }
+                    
+                    loadedCount++;
+                }
+            }
+        });
+        
+        console.log(`Loaded ${activeSessions.size} existing sessions (limit: ${MAX_SESSIONS})`);
+        
+        const totalFolders = countSessionFolders();
+        if (totalFolders > MAX_SESSIONS) {
+            console.warn(`Warning: Found ${totalFolders} session folders, but only loaded ${MAX_SESSIONS} due to session limit`);
+        }
+    } catch (error) {
+        console.error('Error loading existing sessions:', error);
+    }
+}
+
+// Serve the main HTML page
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-/**
- * Request pairing code
- * POST /api/pair
- * Body: { phoneNumber: "234XXXXXXXXXX" }
- */
-app.post('/api/pair', async (req, res) => {
+// API endpoint to request pairing code
+app.post('/request-pairing', async (req, res) => {
     try {
         const { phoneNumber } = req.body;
         
         if (!phoneNumber) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Phone number is required' 
-            });
-        }
-
-        // Clean phone number
-        const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
-        
-        // Validate phone number
-        if (cleanPhone.length < 10) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Invalid phone number format' 
-            });
-        }
-
-        // Generate unique session ID
-        const sessionId = `session_${cleanPhone}_${Date.now()}`;
-        
-        console.log(chalk.blue(`📱 New pairing request for ${cleanPhone} - Session: ${sessionId}`));
-
-        // Store session as pending
-        pendingSessions.set(sessionId, {
-            phoneNumber: cleanPhone,
-            status: 'generating_code',
-            timestamp: Date.now()
-        });
-
-        // Setup callback to capture pairing code
-        let pairingCode = null;
-        let codePromise = new Promise((resolve, reject) => {
-            global.pairingCallbacks[sessionId] = (code) => {
-                pairingCode = code;
-                resolve(code);
-            };
-            
-            // Timeout after 15 seconds
-            setTimeout(() => {
-                if (!pairingCode) {
-                    reject(new Error('Pairing code generation timeout'));
-                }
-            }, 15000);
-        });
-
-        // Start bot session (this will generate the pairing code)
-        startBotSession(cleanPhone, sessionId).catch(err => {
-            console.error(`Error starting session ${sessionId}:`, err);
-            pendingSessions.delete(sessionId);
-        });
-
-        // Wait for pairing code
-        try {
-            const code = await codePromise;
-            
-            // Update pending session
-            pendingSessions.set(sessionId, {
-                phoneNumber: cleanPhone,
-                status: 'awaiting_link',
-                code,
-                timestamp: Date.now()
-            });
-
-            // Clean up callback
-            delete global.pairingCallbacks[sessionId];
-
-            res.json({
-                success: true,
-                sessionId,
-                phoneNumber: cleanPhone,
-                code,
-                message: 'Pairing code generated successfully'
-            });
-
-        } catch (error) {
-            console.error(`Error generating pairing code for ${sessionId}:`, error);
-            pendingSessions.delete(sessionId);
-            delete global.pairingCallbacks[sessionId];
-            
-            res.status(500).json({
+            return res.status(400).json({
                 success: false,
-                error: 'Failed to generate pairing code'
+                error: 'Phone number is required'
             });
         }
-
+        
+        if (isSessionLimitReached()) {
+            return res.status(429).json({
+                success: false,
+                error: `Session limit reached. Maximum ${MAX_SESSIONS} sessions allowed. Click this button again to move to another server`,
+                limit: MAX_SESSIONS,
+                current: activeSessions.size
+            });
+        }
+        
+        const validation = validatePhoneNumber(phoneNumber);
+        if (!validation.valid) {
+            return res.status(400).json({
+                success: false,
+                error: validation.error
+            });
+        }
+        
+        const cleanedNumber = validation.number;
+        
+        activeSessions.set(cleanedNumber, {
+            status: 'requesting',
+            createdAt: new Date(),
+            sessionId: cleanedNumber
+        });
+        
+        console.log(`Requesting pairing code for: ${cleanedNumber} (${activeSessions.size}/${MAX_SESSIONS})`);
+        
+        // Start pairing process
+        await startpairing(cleanedNumber);
+        
+        // Wait for pairing code to be generated
+        let attempts = 0;
+        const maxAttempts = 30;
+        
+        while (attempts < maxAttempts) {
+            try {
+                const pairingFilePath = './kingbadboitimewisher/pairing/pairing.json';
+                if (fs.existsSync(pairingFilePath)) {
+                    const pairingData = JSON.parse(fs.readFileSync(pairingFilePath, 'utf8'));
+                    if (pairingData.code) {
+                        activeSessions.set(cleanedNumber, {
+                            ...activeSessions.get(cleanedNumber),
+                            status: 'code_generated',
+                            pairingCode: pairingData.code
+                        });
+                        
+                        fs.unlinkSync(pairingFilePath);
+                        
+                        return res.json({
+                            success: true,
+                            phoneNumber: cleanedNumber,
+                            pairingCode: pairingData.code,
+                            message: 'Pairing code generated successfully',
+                            sessionInfo: {
+                                current: activeSessions.size,
+                                limit: MAX_SESSIONS,
+                                remaining: MAX_SESSIONS - activeSessions.size
+                            }
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error('Error reading pairing file:', error);
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            attempts++;
+        }
+        
+        activeSessions.delete(cleanedNumber);
+        
+        return res.status(408).json({
+            success: false,
+            error: 'Pairing code generation timed out. Please try again.'
+        });
+        
     } catch (error) {
-        console.error('Error in /api/pair:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
+        console.error('Error in pairing request:', error);
+        
+        if (req.body.phoneNumber) {
+            const validation = validatePhoneNumber(req.body.phoneNumber);
+            if (validation.valid) {
+                activeSessions.delete(validation.number);
+            }
+        }
+        
+        return res.status(500).json({
+            success: false,
+            error: 'Internal server error occurred while generating pairing code'
         });
     }
 });
 
-/**
- * Check session status
- * GET /api/session/:sessionId
- */
-app.get('/api/session/:sessionId', (req, res) => {
-    const { sessionId } = req.params;
-    
-    // Check if session is active
-    if (isSessionActive(sessionId)) {
-        const info = getSessionInfo(sessionId);
-        return res.json({
-            success: true,
-            status: 'connected',
-            sessionId,
-            ...info
-        });
-    }
-    
-    // Check if session is pending
-    if (pendingSessions.has(sessionId)) {
-        const pending = pendingSessions.get(sessionId);
-        return res.json({
-            success: true,
-            status: pending.status,
-            sessionId,
-            ...pending
-        });
-    }
-    
-    res.status(404).json({
-        success: false,
-        error: 'Session not found'
-    });
-});
-
-/**
- * Get all active sessions
- * GET /api/sessions
- */
-app.get('/api/sessions', (req, res) => {
-    const sessions = getAllSessions();
-    const sessionData = sessions.map(sessionId => ({
-        sessionId,
-        active: isSessionActive(sessionId),
-        ...getSessionInfo(sessionId)
+// API endpoint to get active sessions
+app.get('/sessions', (req, res) => {
+    const sessions = Array.from(activeSessions.entries()).map(([phoneNumber, info]) => ({
+        phoneNumber,
+        ...info
     }));
     
     res.json({
         success: true,
-        count: sessions.length,
-        sessions: sessionData
+        sessions: sessions,
+        total: sessions.length,
+        limit: MAX_SESSIONS,
+        remaining: MAX_SESSIONS - sessions.length
     });
 });
 
-/**
- * Delete a session
- * DELETE /api/session/:sessionId
- */
-app.delete('/api/session/:sessionId', async (req, res) => {
-    try {
-        const { sessionId } = req.params;
-        
-        await deleteSession(sessionId);
-        pendingSessions.delete(sessionId);
-        
-        res.json({
-            success: true,
-            message: 'Session deleted successfully'
-        });
-    } catch (error) {
-        console.error('Error deleting session:', error);
-        res.status(500).json({
+// API endpoint to remove a session
+app.delete('/session/:phoneNumber', (req, res) => {
+    const { phoneNumber } = req.params;
+    
+    const validation = validatePhoneNumber(phoneNumber);
+    if (!validation.valid) {
+        return res.status(400).json({
             success: false,
-            error: error.message
+            error: validation.error
         });
     }
-});
-
-/**
- * Health check
- * GET /api/health
- */
-app.get('/api/health', (req, res) => {
+    
+    const cleanedNumber = validation.number;
+    
+    if (!activeSessions.has(cleanedNumber)) {
+        return res.status(404).json({
+            success: false,
+            error: 'Session not found'
+        });
+    }
+    
+    activeSessions.delete(cleanedNumber);
+    
+    const sessionDir = `./kingbadboitimewisher/pairing/${cleanedNumber}`;
+    try {
+        if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+    } catch (error) {
+        console.error(`Error removing session directory for ${cleanedNumber}:`, error);
+    }
+    
     res.json({
         success: true,
-        status: 'online',
-        uptime: process.uptime(),
-        activeSessions: getAllSessions().length,
-        memory: process.memoryUsage()
+        message: `Session for ${cleanedNumber} removed successfully`,
+        sessionInfo: {
+            current: activeSessions.size,
+            limit: MAX_SESSIONS,
+            remaining: MAX_SESSIONS - activeSessions.size
+        }
     });
 });
 
-// Cleanup old pending sessions (every 5 minutes)
-setInterval(() => {
-    const now = Date.now();
-    const timeout = 10 * 60 * 1000; // 10 minutes
-    
-    for (const [sessionId, data] of pendingSessions) {
-        if (now - data.timestamp > timeout) {
-            console.log(chalk.yellow(`⏰ Cleaning up expired pending session: ${sessionId}`));
-            pendingSessions.delete(sessionId);
-            
-            // Delete session if it exists but not connected
-            if (!isSessionActive(sessionId)) {
-                deleteSession(sessionId).catch(console.error);
-            }
-        }
-    }
-}, 5 * 60 * 1000);
+// Error handling middleware
+app.use((error, req, res, next) => {
+    console.error('Server Error:', error);
+    res.status(500).json({
+        success: false,
+        error: 'Internal server error'
+    });
+});
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        error: 'Endpoint not found'
+    });
+});
 
 // Start server
 app.listen(PORT, () => {
-    console.log(chalk.green(`\n✅ Server running on port ${PORT}`));
-    console.log(chalk.cyan(`🌐 Access at: http://localhost:${PORT}`));
-    console.log(chalk.yellow(`📱 Ready to accept pairing requests\n`));
+    console.log(`🚀 WhatsApp Pairing Server running on port ${PORT}`);
+    console.log(`📱 Access the web interface at: http://localhost:${PORT}`);
+    console.log(`📊 Session limit: ${MAX_SESSIONS} concurrent sessions`);
+    
+    setTimeout(loadExistingSessions, 1000);
 });
 
-// Handle process termination
+// Graceful shutdown
 process.on('SIGINT', () => {
-    console.log(chalk.yellow('\n⚠️ Shutting down server...'));
+    console.log('\n🛑 Shutting down server...');
     process.exit(0);
 });
 
-module.exports = app;
+process.on('SIGTERM', () => {
+    console.log('\n🛑 Server terminated');
+    process.exit(0);
+});
