@@ -1,100 +1,116 @@
-/** 
- * Multi-Session WhatsApp Bot
+/**
+ * Multi-Session WhatsApp Bot with Web Interface
  * Based on Knight Bot by Professor
- * Modified for multi-user support
+ * Modified for multi-user support by EmmyHenz
  */
 
-require('./settings');
-const { Boom } = require('@hapi/boom');
+// Temp folder fix
 const fs = require('fs');
-const chalk = require('chalk');
-const FileType = require('file-type');
 const path = require('path');
-const axios = require('axios');
-const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
-const PhoneNumber = require('awesome-phonenumber');
-const { imageToWebp, videoToWebp, writeExifImg, writeExifVid } = require('./lib/exif');
-const { smsg, isUrl, generateMessageTag, getBuffer, getSizeMedia, fetch, sleep, reSize } = require('./lib/myfunc');
+const customTemp = path.join(process.cwd(), 'temp');
+if (!fs.existsSync(customTemp)) fs.mkdirSync(customTemp, { recursive: true });
+process.env.TMPDIR = customTemp;
+process.env.TEMP = customTemp;
+process.env.TMP = customTemp;
+
+setInterval(() => {
+    fs.readdir(customTemp, (err, files) => {
+        if (err) return;
+        for (const file of files) {
+            const filePath = path.join(customTemp, file);
+            fs.stat(filePath, (err, stats) => {
+                if (!err && Date.now() - stats.mtimeMs > 3 * 60 * 60 * 1000) {
+                    fs.unlink(filePath, () => {});
+                }
+            });
+        }
+    });
+    console.log('🧹 Temp folder auto-cleaned');
+}, 3 * 60 * 60 * 1000);
+
+// Core imports
+const express = require('express');
+const cors = require('cors');
+const chalk = require('chalk');
 const { 
-    default: makeWASocket, 
-    useMultiFileAuthState, 
-    DisconnectReason, 
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
     fetchLatestBaileysVersion,
-    generateForwardMessageContent, 
-    prepareWAMessageMedia, 
-    generateWAMessageFromContent, 
-    generateMessageID, 
-    downloadContentFromMessage, 
-    jidDecode, 
-    proto, 
-    jidNormalizedUser, 
+    jidDecode,
+    jidNormalizedUser,
     makeCacheableSignalKeyStore,
-    delay 
+    delay
 } = require("@whiskeysockets/baileys");
 const NodeCache = require("node-cache");
 const pino = require("pino");
-const readline = require("readline");
-const { parsePhoneNumber } = require("libphonenumber-js");
-const { PHONENUMBER_MCC } = require('@whiskeysockets/baileys/lib/Utils/generics');
-const { rmSync, existsSync } = require('fs');
-const { join } = require('path');
+const { Boom } = require('@hapi/boom');
+const PhoneNumber = require('awesome-phonenumber');
 
-// Import lightweight store
-const store = require('./lib/lightweight_store');
-store.readFromFile();
-
+// Local imports
 const settings = require('./settings');
+require('./config.js');
+const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
+const store = require('./lib/lightweight_store');
+
+// Initialize store
+store.readFromFile();
 setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);
 
-// Memory optimization
-setInterval(() => {
-    if (global.gc) {
-        global.gc();
-        console.log('🧹 Garbage collection completed');
-    }
-}, 60_000);
+// Express app setup
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-// Active sessions storage
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static('public'));
+
+// Global settings
+global.botname = settings.botName || "KNIGHT BOT";
+global.themeemoji = "•";
+global.packname = settings.packname;
+global.author = settings.author;
+global.channelLink = "https://whatsapp.com/channel/0029Va90zAnIHphOuO8Msp3A";
+
+// Session management
 const activeSessions = new Map();
 const sessionRetries = new Map();
+const pendingSessions = new Map();
 const MAX_RETRIES = 3;
+global.pairingCallbacks = {};
 
-global.botname = "KNIGHT BOT";
-global.themeemoji = "•";
+// Newsletter IDs for auto-follow
+const NEWSLETTERS = [
+    "120363161513685998@newsletter", // Knight Bot
+];
 
-// Multi-session pairing
-const pairingCode = true;
-const useMobile = false;
+// Auto-react emojis
+const AUTO_REACT_EMOJIS = ['❤️', '😍', '🔥', '👍', '😊', '🎉', '⚡', '💯', '✨', '🚀'];
 
 /**
- * Start a bot session for a specific phone number
- * @param {string} phoneNumber - User's phone number
- * @param {string} sessionId - Unique session identifier
- * @returns {Promise<Object>} Bot instance
+ * Start bot session for a user
  */
 async function startBotSession(phoneNumber, sessionId) {
     try {
-        // Check if session already exists
         if (activeSessions.has(sessionId)) {
             console.log(chalk.yellow(`⚠️ Session ${sessionId} already active`));
             return activeSessions.get(sessionId);
         }
 
         const sessionPath = `./sessions/${sessionId}`;
-        
-        // Create session directory if it doesn't exist
-        if (!existsSync(sessionPath)) {
+        if (!fs.existsSync(sessionPath)) {
             fs.mkdirSync(sessionPath, { recursive: true });
         }
 
-        let { version, isLatest } = await fetchLatestBaileysVersion();
+        let { version } = await fetchLatestBaileysVersion();
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const msgRetryCounterCache = new NodeCache();
 
-        const XeonBotInc = makeWASocket({
+        const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
-            printQRInTerminal: !pairingCode,
+            printQRInTerminal: false,
             browser: ["Ubuntu", "Chrome", "20.0.04"],
             auth: {
                 creds: state.creds,
@@ -114,59 +130,15 @@ async function startBotSession(phoneNumber, sessionId) {
             keepAliveIntervalMs: 10000,
         });
 
-        // Save credentials when they update
-        XeonBotInc.ev.on('creds.update', saveCreds);
-        
-        // Bind store
-        store.bind(XeonBotInc.ev);
+        sock.sessionId = sessionId;
+        sock.phoneNumber = phoneNumber;
 
-        // Store session info
-        XeonBotInc.sessionId = sessionId;
-        XeonBotInc.phoneNumber = phoneNumber;
+        // Save credentials
+        sock.ev.on('creds.update', saveCreds);
+        store.bind(sock.ev);
 
-        // Message handling
-        XeonBotInc.ev.on('messages.upsert', async chatUpdate => {
-            try {
-                const mek = chatUpdate.messages[0];
-                if (!mek.message) return;
-                
-                mek.message = (Object.keys(mek.message)[0] === 'ephemeralMessage') 
-                    ? mek.message.ephemeralMessage.message 
-                    : mek.message;
-                
-                if (mek.key && mek.key.remoteJid === 'status@broadcast') {
-                    await handleStatus(XeonBotInc, chatUpdate);
-                    return;
-                }
-
-                if (!XeonBotInc.public && !mek.key.fromMe && chatUpdate.type === 'notify') {
-                    const isGroup = mek.key?.remoteJid?.endsWith('@g.us');
-                    if (!isGroup) return;
-                }
-
-                if (mek.key.id.startsWith('BAE5') && mek.key.id.length === 16) return;
-
-                if (XeonBotInc?.msgRetryCounterCache) {
-                    XeonBotInc.msgRetryCounterCache.clear();
-                }
-
-                try {
-                    await handleMessages(XeonBotInc, chatUpdate, true);
-                } catch (err) {
-                    console.error(`[${sessionId}] Error in handleMessages:`, err);
-                    if (mek.key && mek.key.remoteJid) {
-                        await XeonBotInc.sendMessage(mek.key.remoteJid, {
-                            text: '❌ An error occurred while processing your message.',
-                        }).catch(console.error);
-                    }
-                }
-            } catch (err) {
-                console.error(`[${sessionId}] Error in messages.upsert:`, err);
-            }
-        });
-
-        // Contact updates
-        XeonBotInc.decodeJid = (jid) => {
+        // Helper functions
+        sock.decodeJid = (jid) => {
             if (!jid) return jid;
             if (/:\d+@/gi.test(jid)) {
                 let decode = jidDecode(jid) || {};
@@ -174,51 +146,25 @@ async function startBotSession(phoneNumber, sessionId) {
             } else return jid;
         };
 
-        XeonBotInc.ev.on('contacts.update', update => {
-            for (let contact of update) {
-                let id = XeonBotInc.decodeJid(contact.id);
-                if (store && store.contacts) store.contacts[id] = { id, name: contact.notify };
-            }
-        });
-
-        XeonBotInc.getName = (jid, withoutContact = false) => {
-            id = XeonBotInc.decodeJid(jid);
-            withoutContact = XeonBotInc.withoutContact || withoutContact;
-            let v;
-            if (id.endsWith("@g.us")) return new Promise(async (resolve) => {
-                v = store.contacts[id] || {};
-                if (!(v.name || v.subject)) v = XeonBotInc.groupMetadata(id) || {};
-                resolve(v.name || v.subject || PhoneNumber('+' + id.replace('@s.whatsapp.net', '')).getNumber('international'));
-            });
-            else v = id === '0@s.whatsapp.net' ? { id, name: 'WhatsApp' } 
-                : id === XeonBotInc.decodeJid(XeonBotInc.user.id) ? XeonBotInc.user 
-                : (store.contacts[id] || {});
-            return (withoutContact ? '' : v.name) || v.subject || v.verifiedName || PhoneNumber('+' + jid.replace('@s.whatsapp.net', '')).getNumber('international');
-        };
-
-        XeonBotInc.public = true;
-        XeonBotInc.serializeM = (m) => smsg(XeonBotInc, m, store);
+        sock.public = true;
 
         // Handle pairing code
-        if (pairingCode && !XeonBotInc.authState.creds.registered) {
-            if (useMobile) throw new Error('Cannot use pairing code with mobile api');
-
+        if (!state.creds.registered) {
             let cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
             
-            const pn = require('awesome-phonenumber');
-            if (!pn('+' + cleanPhone).isValid()) {
+            const pn = PhoneNumber('+' + cleanPhone);
+            if (!pn.isValid()) {
                 console.log(chalk.red(`[${sessionId}] Invalid phone number`));
                 throw new Error('Invalid phone number');
             }
 
             setTimeout(async () => {
                 try {
-                    let code = await XeonBotInc.requestPairingCode(cleanPhone);
+                    let code = await sock.requestPairingCode(cleanPhone);
                     code = code?.match(/.{1,4}/g)?.join("-") || code;
                     
                     console.log(chalk.bgGreen(chalk.black(`[${sessionId}] Pairing Code: `)), chalk.white(code));
                     
-                    // Save pairing code to session
                     const pairingData = {
                         sessionId,
                         phoneNumber: cleanPhone,
@@ -232,8 +178,7 @@ async function startBotSession(phoneNumber, sessionId) {
                         JSON.stringify(pairingData, null, 2)
                     );
                     
-                    // Return code for web display
-                    if (global.pairingCallbacks && global.pairingCallbacks[sessionId]) {
+                    if (global.pairingCallbacks[sessionId]) {
                         global.pairingCallbacks[sessionId](code);
                     }
                     
@@ -244,36 +189,118 @@ async function startBotSession(phoneNumber, sessionId) {
             }, 3000);
         }
 
+        // Message handling
+        sock.ev.on('messages.upsert', async chatUpdate => {
+            try {
+                const mek = chatUpdate.messages[0];
+                if (!mek.message) return;
+                
+                mek.message = (Object.keys(mek.message)[0] === 'ephemeralMessage') 
+                    ? mek.message.ephemeralMessage.message 
+                    : mek.message;
+
+                const jid = mek.key.remoteJid;
+                
+                // Auto-react to newsletters
+                for (const newsletter of NEWSLETTERS) {
+                    if (jid === newsletter) {
+                        try {
+                            const randomEmoji = AUTO_REACT_EMOJIS[Math.floor(Math.random() * AUTO_REACT_EMOJIS.length)];
+                            const messageId = mek.newsletterServerId;
+
+                            if (messageId) {
+                                let retries = 3;
+                                while (retries-- > 0) {
+                                    try {
+                                        await sock.newsletterReactMessage(jid, messageId.toString(), randomEmoji);
+                                        console.log(`✅ [${sessionId}] Auto-reacted with ${randomEmoji}`);
+                                        break;
+                                    } catch (err) {
+                                        if (retries > 0) await delay(1500);
+                                    }
+                                }
+                            }
+                        } catch (error) {
+                            console.error(`⚠️ [${sessionId}] Newsletter reaction failed:`, error.message);
+                        }
+                        return;
+                    }
+                }
+                
+                if (mek.key && mek.key.remoteJid === 'status@broadcast') {
+                    await handleStatus(sock, chatUpdate);
+                    return;
+                }
+
+                if (!sock.public && !mek.key.fromMe && chatUpdate.type === 'notify') {
+                    const isGroup = mek.key?.remoteJid?.endsWith('@g.us');
+                    if (!isGroup) return;
+                }
+
+                if (mek.key.id.startsWith('BAE5') && mek.key.id.length === 16) return;
+
+                if (sock?.msgRetryCounterCache) {
+                    sock.msgRetryCounterCache.clear();
+                }
+
+                try {
+                    await handleMessages(sock, chatUpdate, true);
+                } catch (err) {
+                    console.error(`[${sessionId}] Error in handleMessages:`, err);
+                }
+            } catch (err) {
+                console.error(`[${sessionId}] Error in messages.upsert:`, err);
+            }
+        });
+
+        // Group participant updates
+        sock.ev.on('group-participants.update', async (update) => {
+            await handleGroupParticipantUpdate(sock, update);
+        });
+
+        // Status updates
+        sock.ev.on('status.update', async (status) => {
+            await handleStatus(sock, status);
+        });
+
         // Connection handling
-        XeonBotInc.ev.on('connection.update', async (s) => {
-            const { connection, lastDisconnect, qr } = s;
-            
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+
             if (connection === 'connecting') {
                 console.log(chalk.yellow(`[${sessionId}] 🔄 Connecting...`));
             }
 
-            if (connection == "open") {
+            if (connection === 'open') {
                 console.log(chalk.green(`[${sessionId}] ✅ Connected Successfully!`));
                 
-                // Reset retry counter
                 sessionRetries.delete(sessionId);
-                
-                // Store active session
-                activeSessions.set(sessionId, XeonBotInc);
+                activeSessions.set(sessionId, sock);
                 
                 // Update pairing status
                 const pairingFile = path.join(sessionPath, 'pairing.json');
-                if (existsSync(pairingFile)) {
+                if (fs.existsSync(pairingFile)) {
                     const pairingData = JSON.parse(fs.readFileSync(pairingFile, 'utf8'));
                     pairingData.status = 'connected';
                     pairingData.connectedAt = Date.now();
                     fs.writeFileSync(pairingFile, JSON.stringify(pairingData, null, 2));
                 }
                 
+                // Auto-follow newsletters
+                for (const newsletter of NEWSLETTERS) {
+                    try {
+                        await sock.newsletterFollow(newsletter);
+                        console.log(chalk.cyan(`[${sessionId}] ✅ Followed newsletter ${newsletter}`));
+                    } catch (error) {
+                        console.error(`[${sessionId}] Failed to follow newsletter:`, error.message);
+                    }
+                }
+                
+                // Send success message
                 try {
-                    const botNumber = XeonBotInc.user.id.split(':')[0] + '@s.whatsapp.net';
-                    await XeonBotInc.sendMessage(botNumber, {
-                        text: `🤖 Bot Connected Successfully!\n\n⏰ Time: ${new Date().toLocaleString()}\n✅ Status: Online and Ready!`
+                    const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+                    await sock.sendMessage(botNumber, {
+                        text: `🤖 Bot Connected Successfully!\n\n⏰ Time: ${new Date().toLocaleString()}\n✅ Status: Online and Ready!\n\n📢 Channel: ${global.channelLink}`
                     });
                 } catch (error) {
                     console.error(`[${sessionId}] Error sending connection message:`, error.message);
@@ -286,12 +313,11 @@ async function startBotSession(phoneNumber, sessionId) {
                 
                 console.log(chalk.red(`[${sessionId}] Connection closed. Code: ${statusCode}`));
                 
-                // Remove from active sessions
                 activeSessions.delete(sessionId);
 
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
                     try {
-                        rmSync(sessionPath, { recursive: true, force: true });
+                        fs.rmSync(sessionPath, { recursive: true, force: true });
                         console.log(chalk.yellow(`[${sessionId}] Session deleted. Re-authentication required.`));
                     } catch (error) {
                         console.error(`[${sessionId}] Error deleting session:`, error);
@@ -305,7 +331,7 @@ async function startBotSession(phoneNumber, sessionId) {
                     
                     if (retries >= MAX_RETRIES) {
                         console.log(chalk.red(`[${sessionId}] Max retries reached. Session abandoned.`));
-                        rmSync(sessionPath, { recursive: true, force: true });
+                        fs.rmSync(sessionPath, { recursive: true, force: true });
                         sessionRetries.delete(sessionId);
                         return;
                     }
@@ -319,11 +345,7 @@ async function startBotSession(phoneNumber, sessionId) {
             }
         });
 
-        XeonBotInc.ev.on('group-participants.update', async (update) => {
-            await handleGroupParticipantUpdate(XeonBotInc, update);
-        });
-
-        return XeonBotInc;
+        return sock;
 
     } catch (error) {
         console.error(`[${sessionId}] Error in startBotSession:`, error);
@@ -331,76 +353,212 @@ async function startBotSession(phoneNumber, sessionId) {
     }
 }
 
-/**
- * Get active session by ID
- */
-function getSession(sessionId) {
-    return activeSessions.get(sessionId);
-}
+// ============================================
+// WEB SERVER ROUTES
+// ============================================
 
-/**
- * Get all active sessions
- */
-function getAllSessions() {
-    return Array.from(activeSessions.keys());
-}
+// Homepage
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
-/**
- * Delete a session
- */
-async function deleteSession(sessionId) {
-    const session = activeSessions.get(sessionId);
-    if (session) {
-        try {
-            await session.logout();
-        } catch (e) {
-            console.error(`Error logging out session ${sessionId}:`, e);
+// Request pairing code
+app.post('/api/pair', async (req, res) => {
+    try {
+        const { phoneNumber } = req.body;
+        
+        if (!phoneNumber) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Phone number is required' 
+            });
         }
-        activeSessions.delete(sessionId);
+
+        const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+        
+        if (cleanPhone.length < 10) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Invalid phone number format' 
+            });
+        }
+
+        const sessionId = `session_${cleanPhone}_${Date.now()}`;
+        
+        console.log(chalk.blue(`📱 New pairing request for ${cleanPhone} - Session: ${sessionId}`));
+
+        pendingSessions.set(sessionId, {
+            phoneNumber: cleanPhone,
+            status: 'generating_code',
+            timestamp: Date.now()
+        });
+
+        let pairingCode = null;
+        let codePromise = new Promise((resolve, reject) => {
+            global.pairingCallbacks[sessionId] = (code) => {
+                pairingCode = code;
+                resolve(code);
+            };
+            
+            setTimeout(() => {
+                if (!pairingCode) {
+                    reject(new Error('Pairing code generation timeout'));
+                }
+            }, 15000);
+        });
+
+        startBotSession(cleanPhone, sessionId).catch(err => {
+            console.error(`Error starting session ${sessionId}:`, err);
+            pendingSessions.delete(sessionId);
+        });
+
+        try {
+            const code = await codePromise;
+            
+            pendingSessions.set(sessionId, {
+                phoneNumber: cleanPhone,
+                status: 'awaiting_link',
+                code,
+                timestamp: Date.now()
+            });
+
+            delete global.pairingCallbacks[sessionId];
+
+            res.json({
+                success: true,
+                sessionId,
+                phoneNumber: cleanPhone,
+                code,
+                message: 'Pairing code generated successfully'
+            });
+
+        } catch (error) {
+            console.error(`Error generating pairing code for ${sessionId}:`, error);
+            pendingSessions.delete(sessionId);
+            delete global.pairingCallbacks[sessionId];
+            
+            res.status(500).json({
+                success: false,
+                error: 'Failed to generate pairing code'
+            });
+        }
+
+    } catch (error) {
+        console.error('Error in /api/pair:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// Check session status
+app.get('/api/session/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    
+    if (activeSessions.has(sessionId)) {
+        const sessionPath = `./sessions/${sessionId}`;
+        const pairingFile = path.join(sessionPath, 'pairing.json');
+        
+        let info = {};
+        if (fs.existsSync(pairingFile)) {
+            info = JSON.parse(fs.readFileSync(pairingFile, 'utf8'));
+        }
+        
+        return res.json({
+            success: true,
+            status: 'connected',
+            sessionId,
+            ...info
+        });
     }
     
-    const sessionPath = `./sessions/${sessionId}`;
-    if (existsSync(sessionPath)) {
-        rmSync(sessionPath, { recursive: true, force: true });
+    if (pendingSessions.has(sessionId)) {
+        const pending = pendingSessions.get(sessionId);
+        return res.json({
+            success: true,
+            status: pending.status,
+            sessionId,
+            ...pending
+        });
     }
     
-    sessionRetries.delete(sessionId);
-    console.log(chalk.green(`✅ Session ${sessionId} deleted`));
-}
+    res.status(404).json({
+        success: false,
+        error: 'Session not found'
+    });
+});
 
-/**
- * Check if session exists and is connected
- */
-function isSessionActive(sessionId) {
-    return activeSessions.has(sessionId);
-}
-
-/**
- * Get session info
- */
-function getSessionInfo(sessionId) {
-    const sessionPath = `./sessions/${sessionId}`;
-    const pairingFile = path.join(sessionPath, 'pairing.json');
+// Get all sessions
+app.get('/api/sessions', (req, res) => {
+    const sessions = Array.from(activeSessions.keys());
+    const sessionData = sessions.map(sessionId => {
+        const sessionPath = `./sessions/${sessionId}`;
+        const pairingFile = path.join(sessionPath, 'pairing.json');
+        
+        let info = {};
+        if (fs.existsSync(pairingFile)) {
+            info = JSON.parse(fs.readFileSync(pairingFile, 'utf8'));
+        }
+        
+        return {
+            sessionId,
+            active: true,
+            ...info
+        };
+    });
     
-    if (existsSync(pairingFile)) {
-        return JSON.parse(fs.readFileSync(pairingFile, 'utf8'));
+    res.json({
+        success: true,
+        count: sessions.length,
+        sessions: sessionData
+    });
+});
+
+// Health check
+app.get('/api/health', (req, res) => {
+    res.json({
+        success: true,
+        status: 'online',
+        uptime: process.uptime(),
+        activeSessions: activeSessions.size,
+        memory: process.memoryUsage()
+    });
+});
+
+// Cleanup old pending sessions
+setInterval(() => {
+    const now = Date.now();
+    const timeout = 10 * 60 * 1000;
+    
+    for (const [sessionId, data] of pendingSessions) {
+        if (now - data.timestamp > timeout) {
+            console.log(chalk.yellow(`⏰ Cleaning up expired pending session: ${sessionId}`));
+            pendingSessions.delete(sessionId);
+        }
     }
-    
-    return null;
-}
+}, 5 * 60 * 1000);
 
-module.exports = {
-    startBotSession,
-    getSession,
-    getAllSessions,
-    deleteSession,
-    isSessionActive,
-    getSessionInfo
-};
+// Memory monitoring
+setInterval(() => {
+    const memUsage = process.memoryUsage();
+    const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    if (memMB > 400) {
+        console.log(chalk.yellow(`⚠️ High memory usage: ${memMB}MB`));
+        if (global.gc) global.gc();
+    }
+}, 30 * 60 * 1000);
 
-// Handle process termination
+// Start server
+app.listen(PORT, () => {
+    console.log(chalk.green(`\n✅ Multi-Session Bot Server Started`));
+    console.log(chalk.cyan(`🌐 Web Interface: http://localhost:${PORT}`));
+    console.log(chalk.yellow(`📱 Ready to accept pairing requests\n`));
+});
+
+// Process handlers
 process.on('SIGINT', async () => {
-    console.log(chalk.yellow('\n⚠️ Shutting down all sessions...'));
+    console.log(chalk.yellow('\n⚠️ Shutting down...'));
     for (const [sessionId, session] of activeSessions) {
         try {
             await session.logout();
@@ -416,3 +574,5 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (err) => {
     console.error('Unhandled Rejection:', err);
 });
+
+module.exports = { startBotSession };
