@@ -3,16 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Knight Bot - WhatsApp Pairing</title>
+    <title>WhatsApp Multi-Session Bot</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-
+        
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             display: flex;
@@ -20,125 +20,123 @@
             align-items: center;
             padding: 20px;
         }
-
+        
         .container {
             background: white;
             border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 500px;
-            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             padding: 40px;
+            width: 100%;
+            max-width: 500px;
         }
-
-        .logo {
-            text-align: center;
-            margin-bottom: 20px;
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
         }
-
-        .logo h1 {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            font-size: 2.5rem;
-            margin-bottom: 5px;
-        }
-
-        .logo p {
+        
+        .subtitle {
             color: #666;
-            font-size: 0.9rem;
+            margin-bottom: 30px;
+            font-size: 16px;
         }
-
-        .input-group {
+        
+        .form-group {
             margin-bottom: 20px;
         }
-
+        
         label {
             display: block;
-            color: #333;
-            font-weight: 600;
             margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
         }
-
+        
         input {
             width: 100%;
-            padding: 15px;
-            border: 2px solid #e0e0e0;
+            padding: 12px 15px;
+            border: 2px solid #e1e1e1;
             border-radius: 10px;
             font-size: 16px;
             transition: border-color 0.3s;
         }
-
+        
         input:focus {
             outline: none;
             border-color: #667eea;
         }
-
+        
         button {
-            width: 100%;
-            padding: 15px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
+            padding: 15px 30px;
             border-radius: 10px;
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
-            transition: transform 0.2s;
+            width: 100%;
+            transition: transform 0.3s, box-shadow 0.3s;
         }
-
+        
         button:hover {
             transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
         }
-
+        
         button:disabled {
-            background: #ccc;
+            opacity: 0.6;
             cursor: not-allowed;
             transform: none;
         }
-
+        
         .result {
-            margin-top: 30px;
-            padding: 20px;
+            margin-top: 20px;
+            padding: 15px;
             border-radius: 10px;
             display: none;
         }
-
-        .result.success {
+        
+        .success {
             background: #d4edda;
-            border: 2px solid #28a745;
+            color: #155724;
+            border: 1px solid #c3e6cb;
         }
-
-        .result.error {
+        
+        .error {
             background: #f8d7da;
-            border: 2px solid #dc3545;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
         }
-
-        .pairing-code {
-            font-size: 32px;
-            font-weight: bold;
-            text-align: center;
-            letter-spacing: 5px;
-            margin: 20px 0;
-            color: #667eea;
+        
+        .code-display {
             font-family: 'Courier New', monospace;
-        }
-
-        .instructions {
-            background: #f8f9fa;
+            font-size: 24px;
+            font-weight: bold;
+            letter-spacing: 5px;
+            text-align: center;
             padding: 15px;
+            background: #f8f9fa;
             border-radius: 8px;
-            margin-top: 15px;
+            margin: 10px 0;
         }
-
-        .instructions ol {
-            margin-left: 20px;
-            color: #555;
+        
+        .instructions {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            font-size: 14px;
+            color: #1565c0;
         }
-
-        .instructions li {
-            margin: 8px 0;
+        
+        .loader {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
         }
-
+        
         .spinner {
             border: 4px solid #f3f3f3;
             border-top: 4px solid #667eea;
@@ -146,111 +144,112 @@
             width: 40px;
             height: 40px;
             animation: spin 1s linear infinite;
-            margin: 20px auto;
+            margin: 0 auto 10px;
         }
-
+        
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-
-        .status {
-            text-align: center;
-            color: #666;
-            margin-top: 15px;
-        }
-
-        .footer {
-            text-align: center;
+        
+        .session-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 10px;
             margin-top: 20px;
-            color: #999;
-            font-size: 0.85rem;
-        }
-
-        .footer a {
-            color: #667eea;
-            text-decoration: none;
-        }
-
-        small {
-            display: block;
-            color: #999;
-            margin-top: 5px;
-            font-size: 0.85rem;
+            font-size: 14px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="logo">
-            <h1>🤖 Knight Bot</h1>
-            <p>Multi-Session WhatsApp Bot</p>
-        </div>
-
+        <h1>WhatsApp Bot</h1>
+        <p class="subtitle">Connect your WhatsApp account to use the bot</p>
+        
         <form id="pairingForm">
-            <div class="input-group">
-                <label for="phoneNumber">📱 Phone Number</label>
+            <div class="form-group">
+                <label for="phoneNumber">WhatsApp Number (with country code)</label>
                 <input 
                     type="tel" 
                     id="phoneNumber" 
-                    placeholder="e.g., 2349012345678" 
+                    placeholder="Example: 919876543210" 
                     required
+                    pattern="[0-9]{10,15}"
                 >
-                <small>Enter with country code, no + or spaces (e.g., 919876543210)</small>
+                <small style="color: #666; display: block; margin-top: 5px;">
+                    Enter your WhatsApp number without + sign. Example: 919876543210
+                </small>
             </div>
-
-            <button type="submit" id="submitBtn">
-                Generate Pairing Code
-            </button>
+            
+            <div class="loader" id="loader">
+                <div class="spinner"></div>
+                <p>Generating pairing code...</p>
+            </div>
+            
+            <button type="submit" id="submitBtn">Generate Pairing Code</button>
         </form>
-
-        <div id="result" class="result">
-            <div id="resultContent"></div>
+        
+        <div class="result" id="result"></div>
+        
+        <div class="instructions" id="instructions" style="display: none;">
+            <strong>📱 How to pair:</strong>
+            <ol style="margin-top: 10px; margin-left: 20px;">
+                <li>Open WhatsApp on your phone</li>
+                <li>Go to Settings → Linked Devices → Link a Device</li>
+                <li>Enter the code shown above</li>
+                <li>Wait for connection confirmation</li>
+            </ol>
         </div>
-
-        <div class="footer">
-            <p>Made with ❤️ by <a href="https://github.com/mruniquehacker" target="_blank">Professor</a></p>
-            <p>Multi-Session Mod by EmmyHenz</p>
+        
+        <div class="session-info">
+            <strong>ℹ️ Session Info:</strong>
+            <p id="sessionCount">Active sessions: 0</p>
+            <p id="sessionLimit">Max sessions: 50</p>
         </div>
     </div>
-
+    
     <script>
         const form = document.getElementById('pairingForm');
+        const resultDiv = document.getElementById('result');
+        const loader = document.getElementById('loader');
         const submitBtn = document.getElementById('submitBtn');
-        const result = document.getElementById('result');
-        const resultContent = document.getElementById('resultContent');
-        const phoneInput = document.getElementById('phoneNumber');
-
-        let currentSessionId = null;
-        let statusCheckInterval = null;
-
+        const instructions = document.getElementById('instructions');
+        const sessionCount = document.getElementById('sessionCount');
+        const sessionLimit = document.getElementById('sessionLimit');
+        
+        // Load session info on page load
+        async function loadSessionInfo() {
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+                
+                if (data.success) {
+                    sessionCount.textContent = `Active sessions: ${data.activeSessions}`;
+                    sessionLimit.textContent = `Max sessions: 50`;
+                }
+            } catch (error) {
+                console.error('Error loading session info:', error);
+            }
+        }
+        
+        // Load session info when page loads
+        loadSessionInfo();
+        
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            const phoneNumber = phoneInput.value.trim();
+            const phoneNumber = document.getElementById('phoneNumber').value.trim();
             
-            if (!phoneNumber) {
-                showError('Please enter a phone number');
+            if (!phoneNumber.match(/^[0-9]{10,15}$/)) {
+                showResult('Please enter a valid phone number (10-15 digits)', false);
                 return;
             }
-
-            // Basic validation
-            if (phoneNumber.length < 10 || !/^\d+$/.test(phoneNumber)) {
-                showError('Invalid phone number. Use only digits with country code.');
-                return;
-            }
-
+            
+            // Show loader
+            loader.style.display = 'block';
             submitBtn.disabled = true;
-            submitBtn.textContent = 'Generating Code...';
-            phoneInput.disabled = true;
-
-            result.className = 'result';
-            result.style.display = 'block';
-            resultContent.innerHTML = `
-                <div class="spinner"></div>
-                <p class="status">Generating pairing code...</p>
-            `;
-
+            resultDiv.style.display = 'none';
+            
             try {
                 const response = await fetch('/api/pair', {
                     method: 'POST',
@@ -259,84 +258,45 @@
                     },
                     body: JSON.stringify({ phoneNumber })
                 });
-
+                
                 const data = await response.json();
-
+                
                 if (data.success) {
-                    currentSessionId = data.sessionId;
-                    showSuccess(data.code, data.phoneNumber);
-                    startStatusCheck(data.sessionId);
+                    showResult(`
+                        <h3>✅ Pairing Request Successful!</h3>
+                        <p>Your session has been created.</p>
+                        <p>Check your WhatsApp for pairing code.</p>
+                        <p><strong>Session ID:</strong> ${data.sessionId}</p>
+                    `, true);
+                    
+                    // Update session info
+                    loadSessionInfo();
                 } else {
-                    showError(data.error || 'Failed to generate pairing code');
+                    showResult(`❌ Error: ${data.error}`, false);
                 }
-
             } catch (error) {
-                console.error('Error:', error);
-                showError('Network error. Please try again.');
+                showResult(`❌ Network error: ${error.message}`, false);
             } finally {
+                // Hide loader
+                loader.style.display = 'none';
                 submitBtn.disabled = false;
-                submitBtn.textContent = 'Generate Pairing Code';
-                phoneInput.disabled = false;
             }
         });
-
-        function showSuccess(code, phone) {
-            result.className = 'result success';
-            result.style.display = 'block';
-            resultContent.innerHTML = `
-                <h2 style="color: #28a745; margin-bottom: 15px; text-align: center;">✅ Pairing Code Generated!</h2>
-                <div class="pairing-code">${code}</div>
-                <div class="instructions">
-                    <h3 style="margin-bottom: 10px;">📲 How to Link:</h3>
-                    <ol>
-                        <li>Open <strong>WhatsApp</strong> on your phone</li>
-                        <li>Go to <strong>Settings > Linked Devices</strong></li>
-                        <li>Tap <strong>"Link a Device"</strong></li>
-                        <li>Enter the code: <strong>${code}</strong></li>
-                    </ol>
-                </div>
-                <p class="status" id="linkStatus">⏳ Waiting for you to link...</p>
-            `;
-        }
-
-        function showError(message) {
-            result.className = 'result error';
-            result.style.display = 'block';
-            resultContent.innerHTML = `
-                <h2 style="color: #dc3545; margin-bottom: 15px; text-align: center;">❌ Error</h2>
-                <p style="color: #721c24; text-align: center;">${message}</p>
-            `;
-        }
-
-        function startStatusCheck(sessionId) {
-            if (statusCheckInterval) {
-                clearInterval(statusCheckInterval);
+        
+        function showResult(message, isSuccess) {
+            resultDiv.innerHTML = message;
+            resultDiv.className = `result ${isSuccess ? 'success' : 'error'}`;
+            resultDiv.style.display = 'block';
+            
+            if (isSuccess) {
+                instructions.style.display = 'block';
+            } else {
+                instructions.style.display = 'none';
             }
-
-            statusCheckInterval = setInterval(async () => {
-                try {
-                    const response = await fetch(`/api/session/${sessionId}`);
-                    const data = await response.json();
-
-                    if (data.success && data.status === 'connected') {
-                        clearInterval(statusCheckInterval);
-                        const linkStatus = document.getElementById('linkStatus');
-                        if (linkStatus) {
-                            linkStatus.innerHTML = '🎉 <strong>Successfully Linked!</strong> Your bot is now online.';
-                            linkStatus.style.color = '#28a745';
-                        }
-                    }
-                } catch (error) {
-                    console.error('Status check error:', error);
-                }
-            }, 3000);
+            
+            // Scroll to result
+            resultDiv.scrollIntoView({ behavior: 'smooth' });
         }
-
-        window.addEventListener('beforeunload', () => {
-            if (statusCheckInterval) {
-                clearInterval(statusCheckInterval);
-            }
-        });
     </script>
 </body>
 </html>
