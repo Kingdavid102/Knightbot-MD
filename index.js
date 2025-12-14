@@ -1,7 +1,6 @@
 /**
- * Multi-Session WhatsApp Bot with Web Interface
+ * Multi-Session WhatsApp Bot with Pairing Code Support
  * Based on Knight Bot by Professor
- * Modified for multi-user support
  */
 
 // ============================================
@@ -15,7 +14,7 @@ process.env.TMPDIR = customTemp;
 process.env.TEMP = customTemp;
 process.env.TMP = customTemp;
 
-// Auto-clean temp folder every 3 hours
+// Auto-clean temp folder
 setInterval(() => {
     fs.readdir(customTemp, (err, files) => {
         if (err) return;
@@ -28,7 +27,7 @@ setInterval(() => {
             });
         }
     });
-    console.log('🧹 Temp folder auto-cleaned');
+    console.log('🧹 Temp folder cleaned');
 }, 3 * 60 * 60 * 1000);
 
 // ============================================
@@ -54,24 +53,12 @@ const PhoneNumber = require('awesome-phonenumber');
 // ============================================
 const settings = require('./settings');
 require('./config.js');
-const store = require('./lib/lightweight_store');
-
-// ============================================
-// GLOBAL SETTINGS
-// ============================================
-global.botname = settings.botName || "KNIGHT BOT";
-global.themeemoji = "•";
-global.packname = settings.packname;
-global.author = settings.author;
-global.channelLink = "https://whatsapp.com/channel/0029Va90zAnIHphOuO8Msp3A";
-global.ytch = "Mr Unique Hacker";
 
 // ============================================
 // SESSION MANAGEMENT
 // ============================================
 const activeSessions = new Map();
 const sessionRetries = new Map();
-const pendingSessions = new Map();
 const MAX_RETRIES = 3;
 global.pairingCallbacks = {};
 
@@ -79,21 +66,6 @@ global.pairingCallbacks = {};
 const NEWSLETTERS = [
     "120363161513685998@newsletter", // Knight Bot
 ];
-
-// Auto-react emojis
-const AUTO_REACT_EMOJIS = ['❤️', '😍', '🔥', '👍', '😊', '🎉', '⚡', '💯', '✨', '🚀'];
-
-// Initialize store
-if (store && typeof store.readFromFile === 'function') {
-    try {
-        store.readFromFile();
-        if (typeof store.writeToFile === 'function') {
-            setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);
-        }
-    } catch (error) {
-        console.error('Error initializing store:', error);
-    }
-}
 
 // ============================================
 // SESSION HANDLING FUNCTIONS
@@ -140,8 +112,15 @@ async function startBotSession(phoneNumber, sessionId) {
             syncFullHistory: false,
             getMessage: async (key) => {
                 let jid = jidNormalizedUser(key.remoteJid);
-                let msg = await store.loadMessage(jid, key.id);
-                return msg?.message || "";
+                // Simple message storage
+                try {
+                    const msgFile = path.join(sessionPath, 'messages.json');
+                    if (fs.existsSync(msgFile)) {
+                        const messages = JSON.parse(fs.readFileSync(msgFile, 'utf8'));
+                        return messages[key.id] || "";
+                    }
+                } catch (e) {}
+                return "";
             },
             msgRetryCounterCache,
             defaultQueryTimeoutMs: 60000,
@@ -156,11 +135,6 @@ async function startBotSession(phoneNumber, sessionId) {
 
         // Save credentials
         sock.ev.on('creds.update', saveCreds);
-        
-        // Bind store if available
-        if (store && typeof store.bind === 'function') {
-            store.bind(sock.ev);
-        }
 
         // Helper functions
         sock.decodeJid = (jid) => {
@@ -173,19 +147,44 @@ async function startBotSession(phoneNumber, sessionId) {
 
         sock.public = true;
 
+        // ============================================
+        // PAIRING CODE HANDLING - FROM WORKING BOT
+        // ============================================
+        
         // Handle pairing code if not registered
         if (!state.creds.registered) {
-            let cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+            console.log(chalk.yellow(`[${sessionId}] Device not registered, will request pairing code in 3 seconds...`));
             
-            const pn = PhoneNumber('+' + cleanPhone);
-            if (!pn.isValid()) {
-                console.log(chalk.red(`[${sessionId}] Invalid phone number`));
-                throw new Error('Invalid phone number');
-            }
-
-            // Request pairing code after a delay
+            // DELAYED PAIRING CODE REQUEST - Exactly like working bot
             setTimeout(async () => {
                 try {
+                    let cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+                    
+                    // Validate phone number using awesome-phonenumber
+                    const pn = PhoneNumber('+' + cleanPhone);
+                    if (!pn.isValid()) {
+                        console.log(chalk.red(`[${sessionId}] Invalid phone number`));
+                        
+                        // Store error info
+                        const errorData = {
+                            sessionId,
+                            phoneNumber: cleanPhone,
+                            error: 'Invalid phone number',
+                            timestamp: Date.now(),
+                            status: 'error'
+                        };
+                        
+                        fs.writeFileSync(
+                            path.join(sessionPath, 'error.json'),
+                            JSON.stringify(errorData, null, 2)
+                        );
+                        
+                        return;
+                    }
+
+                    console.log(chalk.yellow(`[${sessionId}] Requesting pairing code for ${cleanPhone}...`));
+                    
+                    // REQUEST PAIRING CODE - EXACTLY like working bot
                     let code = await sock.requestPairingCode(cleanPhone);
                     code = code?.match(/.{1,4}/g)?.join("-") || code;
                     
@@ -205,19 +204,33 @@ async function startBotSession(phoneNumber, sessionId) {
                         JSON.stringify(pairingData, null, 2)
                     );
                     
-                    // Call callback if exists
+                    // Call callback if exists (for web interface)
                     if (global.pairingCallbacks[sessionId]) {
                         global.pairingCallbacks[sessionId](code);
                     }
                     
-                } catch (error) {
-                    console.error(`[${sessionId}] Error requesting pairing code:`, error);
+                    console.log(chalk.yellow(`\n[${sessionId}] WhatsApp should now show pairing notification!`));
+                    console.log(chalk.yellow(`[${sessionId}] Enter this code in WhatsApp: Settings → Linked Devices → Link a Device`));
                     
-                    // Store error info
+                    // Try to send WhatsApp notification (optional)
+                    try {
+                        await sock.sendMessage(`${cleanPhone}@s.whatsapp.net`, {
+                            text: `*WhatsApp Pairing Code*\n\nCode: *${code}*\n\nEnter this code in WhatsApp: Settings → Linked Devices → Link a Device\n\nThis code expires in 20 seconds.`
+                        });
+                        console.log(chalk.green(`[${sessionId}] Sent pairing code via WhatsApp message`));
+                    } catch (msgError) {
+                        console.log(chalk.yellow(`[${sessionId}] Could not send WhatsApp message (normal for new sessions): ${msgError.message}`));
+                    }
+                    
+                } catch (error) {
+                    console.error(chalk.red(`[${sessionId}] ❌ Error requesting pairing code:`), error);
+                    
+                    // Store detailed error info
                     const errorData = {
                         sessionId,
-                        phoneNumber: cleanPhone,
+                        phoneNumber: phoneNumber.replace(/[^0-9]/g, ''),
                         error: error.message,
+                        stack: error.stack,
                         timestamp: Date.now(),
                         status: 'error'
                     };
@@ -226,8 +239,13 @@ async function startBotSession(phoneNumber, sessionId) {
                         path.join(sessionPath, 'error.json'),
                         JSON.stringify(errorData, null, 2)
                     );
+                    
+                    // Call error callback
+                    if (global.pairingCallbacks[sessionId]) {
+                        global.pairingCallbacks[sessionId](null, error.message);
+                    }
                 }
-            }, 3000);
+            }, 3000); // ⚠️ CRITICAL: 3 second delay like original working bot
         }
 
         // ============================================
@@ -239,7 +257,7 @@ async function startBotSession(phoneNumber, sessionId) {
             const { connection, lastDisconnect } = update;
 
             if (connection === 'connecting') {
-                console.log(chalk.yellow(`[${sessionId}] 🔄 Connecting...`));
+                console.log(chalk.yellow(`[${sessionId}] 🔄 Connecting to WhatsApp...`));
             }
 
             if (connection === 'open') {
@@ -277,11 +295,7 @@ async function startBotSession(phoneNumber, sessionId) {
                 try {
                     const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
                     await sock.sendMessage(botNumber, {
-                        text: `🤖 *Bot Connected Successfully!*\n\n` +
-                              `⏰ Time: ${new Date().toLocaleString()}\n` +
-                              `✅ Status: Online and Ready!\n\n` +
-                              `📢 Channel: ${global.channelLink}\n` +
-                              `🔧 Your Session ID: ${sessionId}`
+                        text: `🤖 *Bot Connected Successfully!*\n\n⏰ Time: ${new Date().toLocaleString()}\n✅ Status: Online and Ready!\n\n📢 Channel: ${global.channelLink || 'N/A'}\n🔧 Session ID: ${sessionId}`
                     });
                 } catch (error) {
                     console.error(`[${sessionId}] Error sending connection message:`, error.message);
@@ -334,7 +348,6 @@ async function startBotSession(phoneNumber, sessionId) {
         // Message handling - defer to main.js
         sock.ev.on('messages.upsert', async (chatUpdate) => {
             try {
-                // Import main handler dynamically
                 const { handleMessages } = require('./main');
                 await handleMessages(sock, chatUpdate, true);
             } catch (error) {
@@ -362,29 +375,16 @@ async function startBotSession(phoneNumber, sessionId) {
             }
         });
 
-        // Handle call events (for anticall feature)
-        sock.ev.on('call', async (call) => {
-            try {
-                const { readAnticallState } = require('./commands/anticall');
-                const anticallState = readAnticallState();
-                
-                if (anticallState.enabled && call.status === 'offer') {
-                    console.log(chalk.yellow(`[${sessionId}] 📞 Call received from ${call.from} - Auto rejecting`));
-                    
-                    // Send auto-reject message if configured
-                    if (anticallState.message) {
-                        await sock.sendMessage(call.from, { text: anticallState.message });
-                    }
-                    
-                    // Reject the call
-                    await sock.rejectCall(call.id, call.from);
-                }
-            } catch (error) {
-                console.error(`[${sessionId}] Error handling call:`, error);
-            }
+        console.log(chalk.green(`[${sessionId}] ✅ Bot session initialized and ready for pairing`));
+        
+        // Store in active sessions as pending
+        activeSessions.set(sessionId, {
+            session: sock,
+            phoneNumber,
+            status: 'pending',
+            createdAt: new Date()
         });
-
-        console.log(chalk.green(`[${sessionId}] ✅ Bot session initialized`));
+        
         return sock;
 
     } catch (error) {
@@ -395,7 +395,6 @@ async function startBotSession(phoneNumber, sessionId) {
             sessionId,
             phoneNumber,
             error: error.message,
-            stack: error.stack,
             timestamp: Date.now(),
             status: 'failed'
         };
@@ -431,6 +430,7 @@ function getAllSessions() {
             sessionId,
             phoneNumber: data.phoneNumber,
             status: data.status,
+            createdAt: data.createdAt,
             connectedAt: data.connectedAt,
             uptime: data.connectedAt ? Date.now() - data.connectedAt.getTime() : 0
         });
@@ -494,19 +494,6 @@ function cleanupOldSessions(maxAgeHours = 24) {
             }
         }
     }
-    
-    // Clean pending sessions
-    const pendingToDelete = [];
-    for (const [sessionId, data] of pendingSessions) {
-        if (now - data.timestamp > 10 * 60 * 1000) { // 10 minutes
-            pendingToDelete.push(sessionId);
-        }
-    }
-    
-    pendingToDelete.forEach(sessionId => {
-        pendingSessions.delete(sessionId);
-        console.log(chalk.gray(`🧹 Cleaned expired pending session: ${sessionId}`));
-    });
 }
 
 // ============================================
@@ -524,70 +511,6 @@ setTimeout(() => {
 }, 10000);
 
 // ============================================
-// MEMORY MONITORING
-// ============================================
-setInterval(() => {
-    const memUsage = process.memoryUsage();
-    const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
-    
-    if (memMB > 400) {
-        console.log(chalk.yellow(`⚠️ High memory usage: ${memMB}MB`));
-        
-        // Try to run garbage collection if available
-        if (global.gc) {
-            try {
-                global.gc();
-                console.log(chalk.gray('🧹 Manual garbage collection triggered'));
-            } catch (e) {
-                console.error('Error running GC:', e);
-            }
-        }
-    }
-}, 30 * 60 * 1000);
-
-// ============================================
-// PROCESS HANDLERS
-// ============================================
-process.on('SIGINT', async () => {
-    console.log(chalk.yellow('\n⚠️ Shutting down all sessions...'));
-    
-    // Close all active sessions
-    const closePromises = [];
-    for (const [sessionId, sessionData] of activeSessions) {
-        closePromises.push(closeSession(sessionId));
-    }
-    
-    await Promise.allSettled(closePromises);
-    console.log(chalk.green('✅ All sessions closed'));
-    process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-    console.log(chalk.yellow('\n⚠️ Terminating all sessions...'));
-    
-    // Close all active sessions
-    for (const [sessionId, sessionData] of activeSessions) {
-        try {
-            if (sessionData.session && sessionData.session.ws) {
-                sessionData.session.ws.close();
-            }
-        } catch (e) {
-            console.error(`Error closing session ${sessionId}:`, e);
-        }
-    }
-    
-    process.exit(0);
-});
-
-process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (err) => {
-    console.error('❌ Unhandled Rejection:', err);
-});
-
-// ============================================
 // EXPORTS
 // ============================================
 module.exports = {
@@ -596,8 +519,7 @@ module.exports = {
     getAllSessions,
     closeSession,
     cleanupOldSessions,
-    activeSessions,
-    pendingSessions
+    activeSessions
 };
 
 // ============================================
@@ -605,7 +527,8 @@ module.exports = {
 // ============================================
 console.log(chalk.cyan(`
 ╔══════════════════════════════════════════╗
-║     WhatsApp Multi-Session Bot v1.0      ║
+║     WhatsApp Multi-Session Bot v2.0      ║
 ║      Ready to accept connections         ║
+║      Pairing Code Generation Enabled     ║
 ╚══════════════════════════════════════════╝
 `));
