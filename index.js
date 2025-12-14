@@ -1,10 +1,12 @@
 /**
  * Multi-Session WhatsApp Bot with Web Interface
  * Based on Knight Bot by Professor
- * Modified for multi-user support by EmmyHenz
+ * Modified for multi-user support
  */
 
-// Temp folder fix
+// ============================================
+// TEMP FOLDER FIX
+// ============================================
 const fs = require('fs');
 const path = require('path');
 const customTemp = path.join(process.cwd(), 'temp');
@@ -13,6 +15,7 @@ process.env.TMPDIR = customTemp;
 process.env.TEMP = customTemp;
 process.env.TMP = customTemp;
 
+// Auto-clean temp folder every 3 hours
 setInterval(() => {
     fs.readdir(customTemp, (err, files) => {
         if (err) return;
@@ -28,9 +31,9 @@ setInterval(() => {
     console.log('🧹 Temp folder auto-cleaned');
 }, 3 * 60 * 60 * 1000);
 
-// Core imports
-const express = require('express');
-const cors = require('cors');
+// ============================================
+// CORE IMPORTS
+// ============================================
 const chalk = require('chalk');
 const { 
     default: makeWASocket,
@@ -44,36 +47,28 @@ const {
 } = require("@whiskeysockets/baileys");
 const NodeCache = require("node-cache");
 const pino = require("pino");
-const { Boom } = require('@hapi/boom');
 const PhoneNumber = require('awesome-phonenumber');
 
-// Local imports
+// ============================================
+// LOCAL IMPORTS
+// ============================================
 const settings = require('./settings');
 require('./config.js');
-const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
 const store = require('./lib/lightweight_store');
 
-// Initialize store
-store.readFromFile();
-setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);
-
-// Express app setup
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
-
-// Global settings
+// ============================================
+// GLOBAL SETTINGS
+// ============================================
 global.botname = settings.botName || "KNIGHT BOT";
 global.themeemoji = "•";
 global.packname = settings.packname;
 global.author = settings.author;
 global.channelLink = "https://whatsapp.com/channel/0029Va90zAnIHphOuO8Msp3A";
+global.ytch = "Mr Unique Hacker";
 
-// Session management
+// ============================================
+// SESSION MANAGEMENT
+// ============================================
 const activeSessions = new Map();
 const sessionRetries = new Map();
 const pendingSessions = new Map();
@@ -88,25 +83,49 @@ const NEWSLETTERS = [
 // Auto-react emojis
 const AUTO_REACT_EMOJIS = ['❤️', '😍', '🔥', '👍', '😊', '🎉', '⚡', '💯', '✨', '🚀'];
 
+// Initialize store
+if (store && typeof store.readFromFile === 'function') {
+    try {
+        store.readFromFile();
+        if (typeof store.writeToFile === 'function') {
+            setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);
+        }
+    } catch (error) {
+        console.error('Error initializing store:', error);
+    }
+}
+
+// ============================================
+// SESSION HANDLING FUNCTIONS
+// ============================================
+
 /**
  * Start bot session for a user
  */
 async function startBotSession(phoneNumber, sessionId) {
     try {
+        console.log(chalk.blue(`🚀 Starting bot session for ${phoneNumber} (${sessionId})`));
+        
+        // Check if session already exists
         if (activeSessions.has(sessionId)) {
             console.log(chalk.yellow(`⚠️ Session ${sessionId} already active`));
-            return activeSessions.get(sessionId);
+            return activeSessions.get(sessionId).session;
         }
 
+        // Create session directory
         const sessionPath = `./sessions/${sessionId}`;
         if (!fs.existsSync(sessionPath)) {
             fs.mkdirSync(sessionPath, { recursive: true });
         }
 
+        // Get latest Baileys version
         let { version } = await fetchLatestBaileysVersion();
+        
+        // Use multi-file auth state
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const msgRetryCounterCache = new NodeCache();
 
+        // Create WhatsApp socket
         const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
@@ -130,12 +149,18 @@ async function startBotSession(phoneNumber, sessionId) {
             keepAliveIntervalMs: 10000,
         });
 
+        // Store session metadata
         sock.sessionId = sessionId;
         sock.phoneNumber = phoneNumber;
+        sock.sessionPath = sessionPath;
 
         // Save credentials
         sock.ev.on('creds.update', saveCreds);
-        store.bind(sock.ev);
+        
+        // Bind store if available
+        if (store && typeof store.bind === 'function') {
+            store.bind(sock.ev);
+        }
 
         // Helper functions
         sock.decodeJid = (jid) => {
@@ -148,7 +173,7 @@ async function startBotSession(phoneNumber, sessionId) {
 
         sock.public = true;
 
-        // Handle pairing code
+        // Handle pairing code if not registered
         if (!state.creds.registered) {
             let cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
             
@@ -158,6 +183,7 @@ async function startBotSession(phoneNumber, sessionId) {
                 throw new Error('Invalid phone number');
             }
 
+            // Request pairing code after a delay
             setTimeout(async () => {
                 try {
                     let code = await sock.requestPairingCode(cleanPhone);
@@ -165,6 +191,7 @@ async function startBotSession(phoneNumber, sessionId) {
                     
                     console.log(chalk.bgGreen(chalk.black(`[${sessionId}] Pairing Code: `)), chalk.white(code));
                     
+                    // Store pairing info
                     const pairingData = {
                         sessionId,
                         phoneNumber: cleanPhone,
@@ -178,92 +205,36 @@ async function startBotSession(phoneNumber, sessionId) {
                         JSON.stringify(pairingData, null, 2)
                     );
                     
+                    // Call callback if exists
                     if (global.pairingCallbacks[sessionId]) {
                         global.pairingCallbacks[sessionId](code);
                     }
                     
                 } catch (error) {
                     console.error(`[${sessionId}] Error requesting pairing code:`, error);
-                    throw error;
+                    
+                    // Store error info
+                    const errorData = {
+                        sessionId,
+                        phoneNumber: cleanPhone,
+                        error: error.message,
+                        timestamp: Date.now(),
+                        status: 'error'
+                    };
+                    
+                    fs.writeFileSync(
+                        path.join(sessionPath, 'error.json'),
+                        JSON.stringify(errorData, null, 2)
+                    );
                 }
             }, 3000);
         }
 
-        // Message handling
-        sock.ev.on('messages.upsert', async chatUpdate => {
-            try {
-                const mek = chatUpdate.messages[0];
-                if (!mek.message) return;
-                
-                mek.message = (Object.keys(mek.message)[0] === 'ephemeralMessage') 
-                    ? mek.message.ephemeralMessage.message 
-                    : mek.message;
+        // ============================================
+        // EVENT HANDLERS
+        // ============================================
 
-                const jid = mek.key.remoteJid;
-                
-                // Auto-react to newsletters
-                for (const newsletter of NEWSLETTERS) {
-                    if (jid === newsletter) {
-                        try {
-                            const randomEmoji = AUTO_REACT_EMOJIS[Math.floor(Math.random() * AUTO_REACT_EMOJIS.length)];
-                            const messageId = mek.newsletterServerId;
-
-                            if (messageId) {
-                                let retries = 3;
-                                while (retries-- > 0) {
-                                    try {
-                                        await sock.newsletterReactMessage(jid, messageId.toString(), randomEmoji);
-                                        console.log(`✅ [${sessionId}] Auto-reacted with ${randomEmoji}`);
-                                        break;
-                                    } catch (err) {
-                                        if (retries > 0) await delay(1500);
-                                    }
-                                }
-                            }
-                        } catch (error) {
-                            console.error(`⚠️ [${sessionId}] Newsletter reaction failed:`, error.message);
-                        }
-                        return;
-                    }
-                }
-                
-                if (mek.key && mek.key.remoteJid === 'status@broadcast') {
-                    await handleStatus(sock, chatUpdate);
-                    return;
-                }
-
-                if (!sock.public && !mek.key.fromMe && chatUpdate.type === 'notify') {
-                    const isGroup = mek.key?.remoteJid?.endsWith('@g.us');
-                    if (!isGroup) return;
-                }
-
-                if (mek.key.id.startsWith('BAE5') && mek.key.id.length === 16) return;
-
-                if (sock?.msgRetryCounterCache) {
-                    sock.msgRetryCounterCache.clear();
-                }
-
-                try {
-                    await handleMessages(sock, chatUpdate, true);
-                } catch (err) {
-                    console.error(`[${sessionId}] Error in handleMessages:`, err);
-                }
-            } catch (err) {
-                console.error(`[${sessionId}] Error in messages.upsert:`, err);
-            }
-        });
-
-        // Group participant updates
-        sock.ev.on('group-participants.update', async (update) => {
-            await handleGroupParticipantUpdate(sock, update);
-        });
-
-        // Status updates
-        sock.ev.on('status.update', async (status) => {
-            await handleStatus(sock, status);
-        });
-
-        // Connection handling
+        // Connection updates
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
 
@@ -274,8 +245,14 @@ async function startBotSession(phoneNumber, sessionId) {
             if (connection === 'open') {
                 console.log(chalk.green(`[${sessionId}] ✅ Connected Successfully!`));
                 
+                // Clear retries and mark as active
                 sessionRetries.delete(sessionId);
-                activeSessions.set(sessionId, sock);
+                activeSessions.set(sessionId, {
+                    session: sock,
+                    phoneNumber,
+                    status: 'connected',
+                    connectedAt: new Date()
+                });
                 
                 // Update pairing status
                 const pairingFile = path.join(sessionPath, 'pairing.json');
@@ -296,11 +273,15 @@ async function startBotSession(phoneNumber, sessionId) {
                     }
                 }
                 
-                // Send success message
+                // Send success message to user
                 try {
                     const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
                     await sock.sendMessage(botNumber, {
-                        text: `🤖 Bot Connected Successfully!\n\n⏰ Time: ${new Date().toLocaleString()}\n✅ Status: Online and Ready!\n\n📢 Channel: ${global.channelLink}`
+                        text: `🤖 *Bot Connected Successfully!*\n\n` +
+                              `⏰ Time: ${new Date().toLocaleString()}\n` +
+                              `✅ Status: Online and Ready!\n\n` +
+                              `📢 Channel: ${global.channelLink}\n` +
+                              `🔧 Your Session ID: ${sessionId}`
                     });
                 } catch (error) {
                     console.error(`[${sessionId}] Error sending connection message:`, error.message);
@@ -313,8 +294,10 @@ async function startBotSession(phoneNumber, sessionId) {
                 
                 console.log(chalk.red(`[${sessionId}] Connection closed. Code: ${statusCode}`));
                 
+                // Remove from active sessions
                 activeSessions.delete(sessionId);
 
+                // Handle logged out sessions
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
                     try {
                         fs.rmSync(sessionPath, { recursive: true, force: true });
@@ -326,6 +309,7 @@ async function startBotSession(phoneNumber, sessionId) {
                     return;
                 }
 
+                // Handle reconnection
                 if (shouldReconnect) {
                     const retries = sessionRetries.get(sessionId) || 0;
                     
@@ -340,239 +324,288 @@ async function startBotSession(phoneNumber, sessionId) {
                     console.log(chalk.yellow(`[${sessionId}] Reconnecting... Attempt ${retries + 1}/${MAX_RETRIES}`));
                     
                     await delay(5000);
-                    startBotSession(phoneNumber, sessionId);
+                    startBotSession(phoneNumber, sessionId).catch(err => {
+                        console.error(`[${sessionId}] Failed to reconnect:`, err);
+                    });
                 }
             }
         });
 
+        // Message handling - defer to main.js
+        sock.ev.on('messages.upsert', async (chatUpdate) => {
+            try {
+                // Import main handler dynamically
+                const { handleMessages } = require('./main');
+                await handleMessages(sock, chatUpdate, true);
+            } catch (error) {
+                console.error(`[${sessionId}] Error in message handler:`, error);
+            }
+        });
+
+        // Group participant updates
+        sock.ev.on('group-participants.update', async (update) => {
+            try {
+                const { handleGroupParticipantUpdate } = require('./main');
+                await handleGroupParticipantUpdate(sock, update);
+            } catch (error) {
+                console.error(`[${sessionId}] Error in group participant update:`, error);
+            }
+        });
+
+        // Status updates
+        sock.ev.on('status.update', async (status) => {
+            try {
+                const { handleStatus } = require('./main');
+                await handleStatus(sock, status);
+            } catch (error) {
+                console.error(`[${sessionId}] Error in status update:`, error);
+            }
+        });
+
+        // Handle call events (for anticall feature)
+        sock.ev.on('call', async (call) => {
+            try {
+                const { readAnticallState } = require('./commands/anticall');
+                const anticallState = readAnticallState();
+                
+                if (anticallState.enabled && call.status === 'offer') {
+                    console.log(chalk.yellow(`[${sessionId}] 📞 Call received from ${call.from} - Auto rejecting`));
+                    
+                    // Send auto-reject message if configured
+                    if (anticallState.message) {
+                        await sock.sendMessage(call.from, { text: anticallState.message });
+                    }
+                    
+                    // Reject the call
+                    await sock.rejectCall(call.id, call.from);
+                }
+            } catch (error) {
+                console.error(`[${sessionId}] Error handling call:`, error);
+            }
+        });
+
+        console.log(chalk.green(`[${sessionId}] ✅ Bot session initialized`));
         return sock;
 
     } catch (error) {
-        console.error(`[${sessionId}] Error in startBotSession:`, error);
+        console.error(`[${sessionId}] ❌ Error in startBotSession:`, error);
+        
+        // Store error info
+        const errorData = {
+            sessionId,
+            phoneNumber,
+            error: error.message,
+            stack: error.stack,
+            timestamp: Date.now(),
+            status: 'failed'
+        };
+        
+        const sessionPath = `./sessions/${sessionId}`;
+        if (!fs.existsSync(sessionPath)) {
+            fs.mkdirSync(sessionPath, { recursive: true });
+        }
+        
+        fs.writeFileSync(
+            path.join(sessionPath, 'startup-error.json'),
+            JSON.stringify(errorData, null, 2)
+        );
+        
         throw error;
     }
 }
 
-// ============================================
-// WEB SERVER ROUTES
-// ============================================
+/**
+ * Get active session by ID
+ */
+function getSession(sessionId) {
+    return activeSessions.get(sessionId);
+}
 
-// Homepage
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+/**
+ * Get all active sessions
+ */
+function getAllSessions() {
+    const sessions = [];
+    for (const [sessionId, data] of activeSessions) {
+        sessions.push({
+            sessionId,
+            phoneNumber: data.phoneNumber,
+            status: data.status,
+            connectedAt: data.connectedAt,
+            uptime: data.connectedAt ? Date.now() - data.connectedAt.getTime() : 0
+        });
+    }
+    return sessions;
+}
 
-// Request pairing code
-app.post('/api/pair', async (req, res) => {
+/**
+ * Close a session
+ */
+async function closeSession(sessionId) {
+    const sessionData = activeSessions.get(sessionId);
+    if (!sessionData) {
+        return { success: false, error: 'Session not found' };
+    }
+
     try {
-        const { phoneNumber } = req.body;
+        const sock = sessionData.session;
         
-        if (!phoneNumber) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Phone number is required' 
-            });
+        // Close WebSocket connection
+        if (sock && sock.ws) {
+            sock.ws.close();
         }
-
-        const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
         
-        if (cleanPhone.length < 10) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Invalid phone number format' 
-            });
-        }
-
-        const sessionId = `session_${cleanPhone}_${Date.now()}`;
+        // Remove from active sessions
+        activeSessions.delete(sessionId);
+        sessionRetries.delete(sessionId);
         
-        console.log(chalk.blue(`📱 New pairing request for ${cleanPhone} - Session: ${sessionId}`));
-
-        pendingSessions.set(sessionId, {
-            phoneNumber: cleanPhone,
-            status: 'generating_code',
-            timestamp: Date.now()
-        });
-
-        let pairingCode = null;
-        let codePromise = new Promise((resolve, reject) => {
-            global.pairingCallbacks[sessionId] = (code) => {
-                pairingCode = code;
-                resolve(code);
-            };
-            
-            setTimeout(() => {
-                if (!pairingCode) {
-                    reject(new Error('Pairing code generation timeout'));
-                }
-            }, 15000);
-        });
-
-        startBotSession(cleanPhone, sessionId).catch(err => {
-            console.error(`Error starting session ${sessionId}:`, err);
-            pendingSessions.delete(sessionId);
-        });
-
-        try {
-            const code = await codePromise;
-            
-            pendingSessions.set(sessionId, {
-                phoneNumber: cleanPhone,
-                status: 'awaiting_link',
-                code,
-                timestamp: Date.now()
-            });
-
-            delete global.pairingCallbacks[sessionId];
-
-            res.json({
-                success: true,
-                sessionId,
-                phoneNumber: cleanPhone,
-                code,
-                message: 'Pairing code generated successfully'
-            });
-
-        } catch (error) {
-            console.error(`Error generating pairing code for ${sessionId}:`, error);
-            pendingSessions.delete(sessionId);
-            delete global.pairingCallbacks[sessionId];
-            
-            res.status(500).json({
-                success: false,
-                error: 'Failed to generate pairing code'
-            });
-        }
-
+        console.log(chalk.yellow(`[${sessionId}] Session closed`));
+        
+        return { success: true, message: 'Session closed successfully' };
     } catch (error) {
-        console.error('Error in /api/pair:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
-        });
+        console.error(`[${sessionId}] Error closing session:`, error);
+        return { success: false, error: error.message };
     }
-});
+}
 
-// Check session status
-app.get('/api/session/:sessionId', (req, res) => {
-    const { sessionId } = req.params;
-    
-    if (activeSessions.has(sessionId)) {
-        const sessionPath = `./sessions/${sessionId}`;
-        const pairingFile = path.join(sessionPath, 'pairing.json');
-        
-        let info = {};
-        if (fs.existsSync(pairingFile)) {
-            info = JSON.parse(fs.readFileSync(pairingFile, 'utf8'));
-        }
-        
-        return res.json({
-            success: true,
-            status: 'connected',
-            sessionId,
-            ...info
-        });
-    }
-    
-    if (pendingSessions.has(sessionId)) {
-        const pending = pendingSessions.get(sessionId);
-        return res.json({
-            success: true,
-            status: pending.status,
-            sessionId,
-            ...pending
-        });
-    }
-    
-    res.status(404).json({
-        success: false,
-        error: 'Session not found'
-    });
-});
-
-// Get all sessions
-app.get('/api/sessions', (req, res) => {
-    const sessions = Array.from(activeSessions.keys());
-    const sessionData = sessions.map(sessionId => {
-        const sessionPath = `./sessions/${sessionId}`;
-        const pairingFile = path.join(sessionPath, 'pairing.json');
-        
-        let info = {};
-        if (fs.existsSync(pairingFile)) {
-            info = JSON.parse(fs.readFileSync(pairingFile, 'utf8'));
-        }
-        
-        return {
-            sessionId,
-            active: true,
-            ...info
-        };
-    });
-    
-    res.json({
-        success: true,
-        count: sessions.length,
-        sessions: sessionData
-    });
-});
-
-// Health check
-app.get('/api/health', (req, res) => {
-    res.json({
-        success: true,
-        status: 'online',
-        uptime: process.uptime(),
-        activeSessions: activeSessions.size,
-        memory: process.memoryUsage()
-    });
-});
-
-// Cleanup old pending sessions
-setInterval(() => {
+/**
+ * Cleanup old sessions
+ */
+function cleanupOldSessions(maxAgeHours = 24) {
     const now = Date.now();
-    const timeout = 10 * 60 * 1000;
+    const maxAge = maxAgeHours * 60 * 60 * 1000;
     
-    for (const [sessionId, data] of pendingSessions) {
-        if (now - data.timestamp > timeout) {
-            console.log(chalk.yellow(`⏰ Cleaning up expired pending session: ${sessionId}`));
-            pendingSessions.delete(sessionId);
+    // Clean session folders
+    const sessionsDir = './sessions';
+    if (fs.existsSync(sessionsDir)) {
+        const folders = fs.readdirSync(sessionsDir);
+        
+        for (const folder of folders) {
+            const folderPath = path.join(sessionsDir, folder);
+            const stats = fs.statSync(folderPath);
+            
+            if (now - stats.mtimeMs > maxAge) {
+                try {
+                    fs.rmSync(folderPath, { recursive: true, force: true });
+                    console.log(chalk.gray(`🧹 Cleaned old session folder: ${folder}`));
+                } catch (error) {
+                    console.error(`Error cleaning folder ${folder}:`, error);
+                }
+            }
         }
     }
-}, 5 * 60 * 1000);
+    
+    // Clean pending sessions
+    const pendingToDelete = [];
+    for (const [sessionId, data] of pendingSessions) {
+        if (now - data.timestamp > 10 * 60 * 1000) { // 10 minutes
+            pendingToDelete.push(sessionId);
+        }
+    }
+    
+    pendingToDelete.forEach(sessionId => {
+        pendingSessions.delete(sessionId);
+        console.log(chalk.gray(`🧹 Cleaned expired pending session: ${sessionId}`));
+    });
+}
 
-// Memory monitoring
+// ============================================
+// AUTO-CLEANUP SETUP
+// ============================================
+
+// Run cleanup every hour
+setInterval(() => {
+    cleanupOldSessions();
+}, 60 * 60 * 1000);
+
+// Run initial cleanup
+setTimeout(() => {
+    cleanupOldSessions();
+}, 10000);
+
+// ============================================
+// MEMORY MONITORING
+// ============================================
 setInterval(() => {
     const memUsage = process.memoryUsage();
     const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    
     if (memMB > 400) {
         console.log(chalk.yellow(`⚠️ High memory usage: ${memMB}MB`));
-        if (global.gc) global.gc();
+        
+        // Try to run garbage collection if available
+        if (global.gc) {
+            try {
+                global.gc();
+                console.log(chalk.gray('🧹 Manual garbage collection triggered'));
+            } catch (e) {
+                console.error('Error running GC:', e);
+            }
+        }
     }
 }, 30 * 60 * 1000);
 
-// Start server
-app.listen(PORT, () => {
-    console.log(chalk.green(`\n✅ Multi-Session Bot Server Started`));
-    console.log(chalk.cyan(`🌐 Web Interface: http://localhost:${PORT}`));
-    console.log(chalk.yellow(`📱 Ready to accept pairing requests\n`));
+// ============================================
+// PROCESS HANDLERS
+// ============================================
+process.on('SIGINT', async () => {
+    console.log(chalk.yellow('\n⚠️ Shutting down all sessions...'));
+    
+    // Close all active sessions
+    const closePromises = [];
+    for (const [sessionId, sessionData] of activeSessions) {
+        closePromises.push(closeSession(sessionId));
+    }
+    
+    await Promise.allSettled(closePromises);
+    console.log(chalk.green('✅ All sessions closed'));
+    process.exit(0);
 });
 
-// Process handlers
-process.on('SIGINT', async () => {
-    console.log(chalk.yellow('\n⚠️ Shutting down...'));
-    for (const [sessionId, session] of activeSessions) {
+process.on('SIGTERM', async () => {
+    console.log(chalk.yellow('\n⚠️ Terminating all sessions...'));
+    
+    // Close all active sessions
+    for (const [sessionId, sessionData] of activeSessions) {
         try {
-            await session.logout();
-        } catch (e) {}
+            if (sessionData.session && sessionData.session.ws) {
+                sessionData.session.ws.close();
+            }
+        } catch (e) {
+            console.error(`Error closing session ${sessionId}:`, e);
+        }
     }
+    
     process.exit(0);
 });
 
 process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
+    console.error('❌ Uncaught Exception:', err);
 });
 
 process.on('unhandledRejection', (err) => {
-    console.error('Unhandled Rejection:', err);
+    console.error('❌ Unhandled Rejection:', err);
 });
 
-module.exports = { startBotSession };
+// ============================================
+// EXPORTS
+// ============================================
+module.exports = {
+    startBotSession,
+    getSession,
+    getAllSessions,
+    closeSession,
+    cleanupOldSessions,
+    activeSessions,
+    pendingSessions
+};
+
+// ============================================
+// INITIALIZATION LOG
+// ============================================
+console.log(chalk.cyan(`
+╔══════════════════════════════════════════╗
+║     WhatsApp Multi-Session Bot v1.0      ║
+║      Ready to accept connections         ║
+╚══════════════════════════════════════════╝
+`));
