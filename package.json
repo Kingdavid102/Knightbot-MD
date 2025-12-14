@@ -1,50 +1,68 @@
 {
   "name": "whatsapp-multi-session-bot",
   "version": "2.0.0",
-  "description": "Multi-session WhatsApp Bot with Web Interface",
+  "description": "Multi-session WhatsApp Bot with Web Interface for Heroku Deployment",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "test": "echo \"No tests specified\" && exit 0",
+    "setup": "mkdir -p sessions temp public data logs",
     "clean": "rm -rf sessions/* temp/*",
-    "setup": "mkdir -p sessions temp public logs",
-    "heroku-postbuild": "echo \"Build complete\""
+    "heroku-postbuild": "echo 'Heroku build complete'"
   },
   "keywords": [
-    "whatsapp-bot",
+    "whatsapp",
+    "bot",
     "multi-session",
     "baileys",
     "whatsapp-api"
   ],
-  "author": "Your Name",
+  "author": "",
   "license": "ISC",
   "dependencies": {
+    // CORE WHATSAPP BOT DEPENDENCIES
     "@whiskeysockets/baileys": "^6.4.0",
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "chalk": "^4.1.2",
-    "dotenv": "^16.0.3",
+    "@hapi/boom": "^10.0.1",
+    "awesome-phonenumber": "^3.2.0",
     "node-cache": "^5.1.2",
     "pino": "^8.15.0",
-    "awesome-phonenumber": "^3.2.0",
+    "ws": "^8.17.1",
+    
+    // WEB SERVER & API
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    
+    // UTILITIES
     "axios": "^1.6.0",
-    "fluent-ffmpeg": "^2.1.2",
+    "dotenv": "^16.0.3",
+    "chalk": "^4.1.2",
+    "moment-timezone": "^0.5.43",
+    
+    // MEDIA PROCESSING (from your original bot)
     "ytdl-core": "^4.11.5",
-    "node-fetch": "^2.6.9",
     "yt-search": "^2.10.3",
-    "form-data": "^4.0.0",
-    "qrcode-terminal": "^0.12.0",
-    "moment-timezone": "^0.5.40",
+    "fluent-ffmpeg": "^2.1.2",
+    "gtts": "^0.2.1",
+    "form-data": "^4.0.1",
+    
+    // FILE SYSTEM
     "fs-extra": "^11.1.1",
-    "jimp": "^0.16.13",
-    "cheerio": "^1.0.-rc.12"
+    
+    // WEB SCRAPING (FIXED VERSION - this was the error)
+    "cheerio": "^1.0.0-rc.12",
+    
+    // NETWORK
+    "node-fetch": "^2.7.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=8.0.0"
+    "node": "24.x",
+    "npm": "10.x"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kingdavid102/Knightbot-MD"
   }
 }
